@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "DeepWiki 转 Markdown ｜ 架构笔记导出",
+  "version": "1.0.0",
+  "description": "把 DeepWiki 的 Wiki 页面和 AI 问答页面一键导出为 Markdown，支持翻译后的页面、Mermaid 架构图、整站批量导出与笔记集。",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "downloads",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://deepwiki.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_title": "DeepWiki 转 Markdown",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://deepwiki.com/*"],
+      "js": [
+        "src/lib/turndown.js",
+        "src/lib/turndown-plugin-gfm.js",
+        "src/common/extractor.js",
+        "src/content/content.js"
+      ],
+      "css": [
+        "src/content/content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

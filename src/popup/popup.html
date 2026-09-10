@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DeepWiki → Markdown</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <div class="logo">MD</div>
+    <div class="top-txt">
+      <div class="top-title">DeepWiki → Markdown</div>
+      <div class="top-sub" id="ver">导出为可归档的笔记</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" id="page-card">
+      <div class="ph">
+        <span class="ptag" id="page-type">检测中…</span>
+      </div>
+      <div class="pname" id="page-name">—</div>
+      <div class="pdetail" id="page-detail"></div>
+
+      <div class="actions" id="actions">
+        <button class="btn primary" id="btn-download">下载 Markdown</button>
+        <div class="row">
+          <button class="btn" id="btn-copy">复制</button>
+          <button class="btn" id="btn-collect">加入笔记夹</button>
+        </div>
+      </div>
+
+      <div class="hint" id="hint" hidden></div>
+
+      <div class="qbox" id="qbox" hidden>
+        <div class="qbox-title">本页问答（可逐条导出）</div>
+        <div class="qlist" id="qlist"></div>
+      </div>
+
+      <button class="btn wide" id="btn-batch" hidden>批量导出整个 Wiki</button>
+      <div class="hint" id="batch-hint" hidden>
+        批量导出会依次抓取左侧目录里的全部子页面，保存到下载目录并生成 00-目录.md。<br>
+        抓取使用隐藏 iframe，因此<b>不会包含翻译插件的译文</b>；单个页面导出则包含译文。
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="ch">
+        <span>笔记夹</span>
+        <span class="badge" id="notes-count">0</span>
+      </div>
+      <div class="muted" id="notes-desc">把不同问答页面的内容收集起来，最后汇总成一份笔记。</div>
+      <div class="row">
+        <button class="btn" id="btn-notes-export">导出</button>
+        <button class="btn" id="btn-notes-copy">复制</button>
+        <button class="btn danger" id="btn-notes-clear">清空</button>
+      </div>
+    </section>
+
+    <details class="card settings" id="settings">
+      <summary class="ch">设置</summary>
+
+      <div class="grid">
+        <label class="sw"><input type="checkbox" data-opt="frontMatter"><span>输出 front-matter</span></label>
+        <label class="sw"><input type="checkbox" data-opt="sourceLine"><span>正文顶部显示来源</span></label>
+        <label class="sw"><input type="checkbox" data-opt="includeSourceFiles"><span>Wiki 保留「相关源文件」</span></label>
+        <label class="sw"><input type="checkbox" data-opt="includeQASources"><span>问答保留「来源文件」</span></label>
+        <label class="sw"><input type="checkbox" data-opt="citationLinks"><span>引用标记转 GitHub 链接</span></label>
+        <label class="sw"><input type="checkbox" data-opt="dropHidden"><span>忽略页面隐藏元素</span></label>
+        <label class="sw"><input type="checkbox" data-opt="demoteAnswerHeadings"><span>回答标题降一级</span></label>
+        <label class="sw"><input type="checkbox" data-opt="timestamp"><span>文件名带时间戳</span></label>
+      </div>
+
+      <label class="field">
+        <span>图表（Mermaid 架构图）</span>
+        <select data-opt="diagramMode">
+          <option value="files">导出为独立 .svg 文件（推荐，兼容各类笔记软件）</option>
+          <option value="datauri">内嵌进 Markdown（单文件、体积大）</option>
+          <option value="skip">忽略图表</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>下载子目录</span>
+        <input type="text" data-opt="subfolder" placeholder="DeepWiki">
+      </label>
+      <label class="field">
+        <span>Wiki 文件名模板</span>
+        <input type="text" data-opt="wikiFilename" placeholder="{repo}-{pageId}">
+      </label>
+      <label class="field">
+        <span>单条问答文件名</span>
+        <input type="text" data-opt="qaFilename" placeholder="{repo}-问答-{date}">
+      </label>
+      <label class="field">
+        <span>整页问答文件名</span>
+        <input type="text" data-opt="multiQaFilename" placeholder="{repo}-问答合集-{date}">
+      </label>
+      <div class="tmpl-tip">
+        可用变量：{repo} {pageId} {title} {date} {time} {type} {count}
+      </div>
+
+      <button class="btn wide" id="btn-reset">恢复默认设置</button>
+    </details>
+
+    <div class="foot">
+      译文导出依赖翻译插件把译文写回页面 DOM（沉浸式翻译默认模式即可）。
+    </div>
+  </main>
+
+  <script src="../common/extractor.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# 统一使用 LF 行尾（跨平台协作 / Chrome 扩展源码）
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.svg text eol=lf
