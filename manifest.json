@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DeepWiki 转 Markdown ｜ 架构笔记导出",
-  "version": "1.0.0",
-  "description": "把 DeepWiki 的 Wiki 页面和 AI 问答页面一键导出为 Markdown，支持翻译后的页面、Mermaid 架构图、整站批量导出与笔记集。",
+  "version": "1.2.0",
+  "description": "把 DeepWiki 的 Wiki 页面和 AI 问答页面一键导出为 Markdown：每篇一个独立文件夹，支持陪读蛙/沉浸式翻译的译文、Mermaid 架构图、整站自动翻页批量导出（含译文）与笔记集，重复导出覆盖更新。",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon16.png",

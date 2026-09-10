@@ -39,8 +39,12 @@
 
       <button class="btn wide" id="btn-batch" hidden>批量导出整个 Wiki</button>
       <div class="hint" id="batch-hint" hidden>
-        批量导出会依次抓取左侧目录里的全部子页面，保存到下载目录并生成 00-目录.md。<br>
-        抓取使用隐藏 iframe，因此<b>不会包含翻译插件的译文</b>；单个页面导出则包含译文。
+        批量导出会在当前标签页里自动翻页：逐页打开、等正文与架构图渲染完整后提取，
+        每页存成一个独立文件夹 <b>&lt;子目录&gt;/&lt;仓库&gt;/&lt;页面&gt;/index.md + assets/</b>，
+        并在仓库目录下生成 00-目录.md。完成后会自动回到起始页面。<br>
+        默认<b>只导出原文</b>（快），译文可以在导出后交给大模型处理；
+        想直接出中文，请把设置里的「批量导出的译文处理」改成「逐页等待译文」。<br>
+        全程页面可见、可随时停止；重复导出同名页面会<b>直接覆盖</b>旧文件。
       </div>
     </section>
 
@@ -61,6 +65,7 @@
       <summary class="ch">设置</summary>
 
       <div class="grid">
+        <label class="sw"><input type="checkbox" data-opt="folderPerPage"><span>一篇一个文件夹</span></label>
         <label class="sw"><input type="checkbox" data-opt="frontMatter"><span>输出 front-matter</span></label>
         <label class="sw"><input type="checkbox" data-opt="sourceLine"><span>正文顶部显示来源</span></label>
         <label class="sw"><input type="checkbox" data-opt="includeSourceFiles"><span>Wiki 保留「相关源文件」</span></label>
@@ -72,6 +77,15 @@
       </div>
 
       <label class="field">
+        <span>批量导出的译文处理</span>
+        <select data-opt="batchTranslation">
+          <option value="original">只导出原文（快，译文后续交给大模型）</option>
+          <option value="translated">逐页等待译文（慢，直接出中文）</option>
+          <option value="ask">每次导出前询问</option>
+        </select>
+      </label>
+
+      <label class="field">
         <span>图表（Mermaid 架构图）</span>
         <select data-opt="diagramMode">
           <option value="files">导出为独立 .svg 文件（推荐，兼容各类笔记软件）</option>
@@ -81,11 +95,15 @@
       </label>
 
       <label class="field">
-        <span>下载子目录</span>
+        <span>下载根目录</span>
         <input type="text" data-opt="subfolder" placeholder="DeepWiki">
       </label>
       <label class="field">
-        <span>Wiki 文件名模板</span>
+        <span>文件夹内正文文件名</span>
+        <input type="text" data-opt="pageFileName" placeholder="index">
+      </label>
+      <label class="field">
+        <span>Wiki 文件名模板（平铺模式）</span>
         <input type="text" data-opt="wikiFilename" placeholder="{repo}-{pageId}">
       </label>
       <label class="field">
@@ -104,7 +122,9 @@
     </details>
 
     <div class="foot">
-      译文导出依赖翻译插件把译文写回页面 DOM（沉浸式翻译默认模式即可）。
+      默认导出的是<b>原文</b>：批量导出不滚动页面，因此翻译插件的懒翻译不会被触发，
+      速度快、内容完整（正文与架构图都齐全），适合导出后交给大模型统一翻译。
+      单页导出仍支持带译文：导出前扩展会估算覆盖率，不足时会问你要不要滚动补齐。
     </div>
   </main>
 

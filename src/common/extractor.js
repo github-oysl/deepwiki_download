@@ -3,10 +3,18 @@
  * 核心模块：页面识别 / 内容提取 / DOM 清洗 / Markdown 转换
  *
  * 设计要点：
- *  1) 全部基于「实时 DOM」提取，因此翻译插件（沉浸式翻译、Google 翻译等）
- *     写回页面的译文会被原样导出；
+ *  1) 全部基于「实时 DOM」提取，因此翻译插件（沉浸式翻译、陪读蛙 read-frog、
+ *     Google 翻译等）写回页面的译文会被原样导出；
  *  2) 所有函数都以 document 为入参，便于对同源 iframe 复用（整站批量导出）；
  *  3) 依赖 TurndownService 与 turndownPluginGfm 两个全局变量。
+ *
+ * 陪读蛙（read-frog）适配说明：
+ *  它把译文写进 <span class="notranslate read-frog-translated-content-wrapper">
+ *  并插在原文元素内部（或紧随其后），译文正文在 .read-frog-translated-block-content
+ *  / .read-frog-translated-inline-content 里；「仅译文」模式则是原文本地替换，
+ *  并在元素上打 data-read-frog-translation-only（同时给元素加 lang="zh"）标记。
+ *  因此本文件：保护译文节点不被清洗删掉、剔除它的加载态/报错 UI、
+ *  把译文单独成段，并在统计译文覆盖率时同时认这两种形态。
  */
 (function (global) {
   'use strict';
@@ -28,16 +36,23 @@
     // 图表
     diagramMode: 'files',         // files（独立 svg 文件）| datauri（内嵌 base64）| skip
     diagramAlt: '架构图',
-    // 文件名
-    subfolder: 'DeepWiki',        // 下载子目录，留空表示直接下载到下载目录
+    // 文件名 / 目录
+    folderPerPage: true,          // 一篇一个文件夹：<子目录>/<owner>/<repo>/<页面>/index.md
+    pageFileName: 'index',        // 文件夹内的正文文件名（不含 .md）
+    subfolder: 'DeepWiki',        // 下载根目录，留空表示直接下载到下载目录
     wikiFilename: '{repo}-{pageId}',
     qaFilename: '{repo}-问答-{date}',
     multiQaFilename: '{repo}-问答合集-{date}',
+    // 批量导出的译文处理：
+    //   original   只导出原文（快），译文交给后续的大模型处理
+    //   translated 逐页滚动、等译文补齐再导出（慢）
+    //   ask        每次导出前询问
+    batchTranslation: 'original',
     // 其他
     timestamp: false              // 文件名追加时分秒
   };
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.2.0';
 
   /* ==================== 基础工具 ==================== */
 
@@ -158,6 +173,139 @@
     return { type: 'home', url: origin + u.pathname, repo: '', pageId: '' };
   }
 
+  /* ==================== 译文检测（陪读蛙 / 沉浸式翻译等） ====================
+   * 译文落到 DOM 里有两种形态：
+   *  1) 另外插一个译文容器（read-frog 双语模式、沉浸式翻译默认模式）——
+   *     形如 <span class="read-frog-translated-content-wrapper">…</span>
+   *  2) 直接把原文就地替换成译文（read-frog「仅译文」模式）——
+   *     元素上带 data-read-frog-translation-only / lang="zh"，没有译文容器
+   * 早期实现只数第 1 种容器，于是「仅译文」模式下覆盖率恒为 0，
+   * 界面会误报「没有译文」、也不会触发滚动补齐。
+   * 现在统一按「正文块里的中文是否已占多数」来判定，两种形态与其它插件都覆盖。
+   */
+
+  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/;
+  const CJK_ALL_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/g;
+  const LATIN_ALL_RE = /[A-Za-z]/g;
+  const TRANSLATABLE_SEL = 'p,li,h1,h2,h3,h4,h5,h6,blockquote,dd,dt,td,th';
+  // 译文目标语言（这些 lang 值说明该块已被就地替换成译文）
+  const TRANSLATED_LANGS = /^(zh|cmn|yue|ja|ko)/i;
+
+  function proseRoot(doc) {
+    return doc.querySelector(SEL.prose) || doc.querySelector(SEL.proseFallback);
+  }
+
+  function cjkCount(s) {
+    const m = String(s == null ? '' : s).match(CJK_ALL_RE);
+    return m ? m.length : 0;
+  }
+
+  function latinCount(s) {
+    const m = String(s == null ? '' : s).match(LATIN_ALL_RE);
+    return m ? m.length : 0;
+  }
+
+  /**
+   * 这段文字像不像「该被翻译的正文」。
+   * 用来排除文件名（minio.Client…）、代码标识符（segcore::Segcore）、
+   * 图表节点标签这类本来就不参与翻译的内容，避免把覆盖率算低。
+   */
+  function isProseText(t) {
+    if (!t) return false;
+    if (CJK_RE.test(t)) return true;
+    // 真实句子/标题一定有「小写单词 + 空白或标点」，而 minio.Client…、segcore::Segcore
+    // 这类标识符没有；两个方向都试，短句 / 单句结尾也能认出来。
+    return /[a-z]{2,}[\s,;!?)]/.test(t) || /\s[a-z]{2,}/.test(t);
+  }
+
+  /** 正文里「本该被翻译」的块 */
+  function translatableBlocks(doc) {
+    const root = proseRoot(doc);
+    if (!root) return [];
+    let all;
+    try {
+      all = root.querySelectorAll(TRANSLATABLE_SEL);
+    } catch (e) {
+      return [];
+    }
+    const out = [];
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (el.closest && el.closest(RF.wrapper)) continue;  // 译文容器内部不算
+      if (el.closest && el.closest('details')) continue;   // 「相关源文件」文件清单不参与翻译
+      const t = norm(el.textContent);
+      if (t.length < 8) continue;
+      if (!isProseText(t)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
+  /** 这个正文块是否已经有译文（两种译文形态都覆盖） */
+  function isTranslatedBlock(el) {
+    if (!el) return false;
+    if (el.querySelector && el.querySelector(RF.wrapper)) return true;   // 双语：块里插了译文容器
+    const lang = (el.getAttribute && el.getAttribute('lang')) || '';
+    if (TRANSLATED_LANGS.test(lang)) return true;                        // 仅译文：就地替换并打了 lang
+    if (el.hasAttribute && el.hasAttribute('data-read-frog-translation-only')) return true;
+    const t = norm(el.textContent);                                      // 通用兜底：中文占多数
+    const c = cjkCount(t);
+    const l = latinCount(t);
+    return (c + l) > 0 && c / (c + l) > 0.3;
+  }
+
+  /** 译文统计：blocks=正文块数，translated=已有译文的块数 */
+  function translationStats(doc) {
+    const blocks = translatableBlocks(doc);
+    let translated = 0;
+    for (let i = 0; i < blocks.length; i++) {
+      if (isTranslatedBlock(blocks[i])) translated++;
+    }
+    let only = 0;
+    try {
+      only = doc.querySelectorAll('[data-read-frog-translation-only]').length;
+    } catch (e) { only = 0; }
+    return {
+      blocks: blocks.length,
+      translated: translated,
+      ratio: blocks.length ? translated / blocks.length : 0,
+      wrappers: countTranslations(doc),
+      only: only
+    };
+  }
+
+  /** 当前文档里已经写进 DOM 的译文容器条数（加载中的占位不算） */
+  function countTranslations(doc) {
+    let list;
+    try {
+      list = doc.querySelectorAll(RF.wrapper);
+    } catch (e) {
+      return 0;
+    }
+    let n = 0;
+    Array.prototype.forEach.call(list, function (w) {
+      if ((w.textContent || '').replace(/\s+/g, '').length) n++;
+    });
+    return n;
+  }
+
+  /** 正文里「本该被翻译」的块数 */
+  function countTranslatableBlocks(doc) {
+    return translatableBlocks(doc).length;
+  }
+
+  /** 译文覆盖率（0~1），用于导出前提示用户「还没翻译完」 */
+  function translationCoverage(doc) {
+    const s = translationStats(doc);
+    return {
+      count: s.translated,
+      blocks: s.blocks,
+      ratio: s.ratio,
+      wrappers: s.wrappers,
+      only: s.only
+    };
+  }
+
   /* ==================== 页面结构常量 ==================== */
 
   const SEL = {
@@ -167,6 +315,38 @@
     question: 'span.text-xl, [class*="text-xl"]',
     sourceCard: '[id^="file-"]'
   };
+
+  /* 陪读蛙（read-frog）译文节点 */
+  const RF = {
+    wrapper: '.read-frog-translated-content-wrapper',
+    block: '.read-frog-translated-block-content',
+    inline: '.read-frog-translated-inline-content',
+    // 加载态 / 报错 UI：必须剔除，它们不是译文
+    ui: [
+      '.read-frog-spinner',
+      '.read-frog-react-shadow-host',
+      '.read-frog-translation-error-container',
+      '[class*="read-frog-translation-error"]'
+    ]
+  };
+
+  /** 元素自身是否带陪读蛙标记（译文节点、原文被替换的锚点等） */
+  function isReadFrogMarked(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const cls = typeof el.className === 'string' ? el.className : '';
+    if (cls && cls.indexOf('read-frog-') >= 0) return true;
+    if (el.hasAttribute && (el.hasAttribute('data-read-frog-translation-only') ||
+        el.hasAttribute('data-read-frog-translation-mode'))) return true;
+    return false;
+  }
+
+  /** 是否是承载译文的容器 */
+  function isTranslationNode(el) {
+    if (!el || el.nodeType !== 1 || !el.classList) return false;
+    return el.classList.contains('read-frog-translated-content-wrapper') ||
+      el.classList.contains('read-frog-translated-block-content') ||
+      el.classList.contains('read-frog-translated-inline-content');
+  }
 
   /** 需要从导出结果中剔除的「界面元素」 */
   const REMOVE_SELECTORS = [
@@ -181,6 +361,9 @@
     '[class*="immersive-translate"]:not([class*="target"])',
     '[class*="immersive_translate"]:not([class*="target"])',
     '[class*="translation-widget"]', '[class*="translate-button"]',
+    // 陪读蛙的加载态与报错 UI（译文本身不在此列）
+    '.read-frog-spinner', '.read-frog-react-shadow-host',
+    '.read-frog-translation-error-container', '[class*="read-frog-translation-error"]',
     '.dw-md-export-ui'
   ];
 
@@ -205,8 +388,17 @@
         continue;
       }
       if (!cs) continue;
-      if (cs.display === 'none' || cs.visibility === 'hidden' ||
-          cs.visibility === 'collapse' || cs.opacity === '0') {
+      if (cs.display === 'none') {
+        try {
+          el.setAttribute(HIDDEN_ATTR, '1');
+        } catch (e) { /* ignore */ }
+        marked.push(el);
+        continue;
+      }
+      // 译文节点可能被翻译插件的样式预设调成半透明 / 模糊后再淡入，
+      // 这类「暂时不可见」不等于「不该导出」，不能按隐藏元素丢掉。
+      if (isTranslationNode(el) || isReadFrogMarked(el)) continue;
+      if (cs.visibility === 'hidden' || cs.visibility === 'collapse' || cs.opacity === '0') {
         try {
           el.setAttribute(HIDDEN_ATTR, '1');
         } catch (e) { /* ignore */ }
@@ -247,6 +439,18 @@
     } catch (e) {
       return c.outerHTML;
     }
+  }
+
+  /**
+   * Markdown 链接目标里出现的 `(` `)` 和空格必须百分号编码，
+   * 否则像 `2.6-core-engine-(segcore)` 这种页面名会把链接截断：
+   * `![图](assets/2.6-core-engine-(segcore)-diagram-1.svg)` 会被解析成
+   * 目标 `assets/2.6-core-engine-(segcore`。
+   */
+  function mdPath(p) {
+    return String(p == null ? '' : p).replace(/[()\s]/g, function (c) {
+      return '%' + c.charCodeAt(0).toString(16).toUpperCase();
+    });
   }
 
   /** DeepWiki 会在图表前放一个 `<p>Title: xxxxx</p>`，把它变成图片说明 */
@@ -331,7 +535,7 @@
         const alt = caption || (opts.diagramAlt + ' ' + (i + 1));
         diagrams.push({
           token: token,
-          markdown: '![' + alt.replace(/[\[\]]/g, '') + '](' + src + ')',
+          markdown: '![' + alt.replace(/[\[\]]/g, '') + '](' + mdPath(src) + ')',
           svg: svgText
         });
       } else {
@@ -543,7 +747,8 @@
       codeBlocks: clone.querySelectorAll('pre').length,
       tables: clone.querySelectorAll('table').length,
       links: clone.querySelectorAll('a[href]').length,
-      diagrams: diagrams.length
+      diagrams: diagrams.length,
+      translations: clone.querySelectorAll(RF.wrapper).length
     };
     return { node: clone, diagrams: diagrams, stats: stats };
   }
@@ -607,6 +812,20 @@
         }, '');
         if (longest.length >= fence.length) fence = '`'.repeat(longest.length + 1);
         return '\n\n' + fence + lang + '\n' + text + '\n' + fence + '\n\n';
+      }
+    });
+    // 陪读蛙译文：整段译文另起一段，避免导出后中文和英文粘在同一行
+    td.addRule('dwTranslation', {
+      filter: function (node) {
+        return !!(node.classList &&
+          node.classList.contains('read-frog-translated-content-wrapper'));
+      },
+      replacement: function (content, node) {
+        const text = String(content || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!text) return '';
+        // 行内译文（跟着词组/小片段）保持内联，整段译文单独成段
+        const isInline = !!node.querySelector(RF.inline) && !node.querySelector(RF.block);
+        return isInline ? ' ' + text + ' ' : '\n\n' + text + '\n\n';
       }
     });
     // 表格单元格里的换行使用 <br>
@@ -794,27 +1013,71 @@
     };
   }
 
-  function buildFilename(tpl, ext, opts) {
+  /**
+   * 计算导出路径。
+   * folderPerPage 打开时（默认）：<子目录>/<owner>/<repo>/<页面>/index.md，
+   * 图片统一放该页文件夹下的 assets/；关闭时退回旧的平铺行为。
+   * @returns {{filename:string, dir:string, repoDir:string, assetDir:string, segment:string, fileName:string}}
+   */
+  function buildPaths(ext, opts, nameTemplate) {
     const vars = filenameVars(ext, opts);
-    let name = renderTemplate(tpl, vars);
-    if (opts.timestamp) name += '-' + vars.time;
-    const parts = [];
+    let base = renderTemplate(nameTemplate, vars);
+    if (opts.timestamp) base += '-' + vars.time;
+    base = sanitizeSegment(base);
+
+    const segs = [];
     if (opts.subfolder) {
-      String(opts.subfolder).split('/').forEach(function (seg) {
-        const s = sanitizeSegment(renderTemplate(seg, vars));
-        if (s) parts.push(s);
+      String(opts.subfolder).split('/').forEach(function (s) {
+        const t = sanitizeSegment(renderTemplate(s, vars));
+        if (t) segs.push(t);
       });
     }
-    parts.push(sanitizeSegment(name) + '.md');
-    return parts.join('/');
+
+    if (!opts.folderPerPage) {
+      const flat = segs.concat([base + '.md']).join('/');
+      const dir = flat.replace(/[^/]*$/, '');
+      return {
+        filename: flat,
+        dir: dir,
+        repoDir: dir,
+        assetDir: base + '.assets',
+        segment: base,
+        fileName: base + '.md'
+      };
+    }
+
+    // 仓库目录：<owner>/<repo>
+    String(ext.repo || '').split('/').forEach(function (s) {
+      const t = sanitizeSegment(s);
+      if (t) segs.push(t);
+    });
+    const repoDir = segs.join('/');
+
+    // 页面目录：Wiki 用 pageId（如 1-overview），问答用文件名模板
+    const segment = ext.type === 'wiki'
+      ? sanitizeSegment(ext.pageId || 'overview')
+      : sanitizeSegment(base);
+    const dir = (repoDir ? repoDir + '/' : '') + segment;
+    const fileName = sanitizeSegment(opts.pageFileName || 'index') + '.md';
+
+    return {
+      filename: dir + '/' + fileName,
+      dir: dir,
+      repoDir: repoDir,
+      assetDir: 'assets',
+      segment: segment,
+      fileName: fileName
+    };
   }
 
-  function makeCtx(ext, opts, doc, fileNameBase) {
+  function makeCtx(ext, opts, doc, paths) {
+    const segment = typeof paths === 'string' ? sanitizeSegment(paths) : paths.segment;
+    const assetDir = typeof paths === 'string' ? segment + '.assets' : paths.assetDir;
     return {
       base: docBase(doc),
       assets: [],
-      assetBase: sanitizeSegment(fileNameBase).replace(/\.md$/, ''),
-      assetDir: sanitizeSegment(fileNameBase).replace(/\.md$/, '') + '.assets',
+      assetBase: segment,
+      assetDir: assetDir,
       sourceIndex: null,
       doc: doc
     };
@@ -832,9 +1095,10 @@
     const opts = mergeOptions(options);
     const ext = extractWiki(doc);
     if (!ext.ok) return ext;
-    const ctx = makeCtx(ext, opts, doc, renderTemplate(opts.wikiFilename, filenameVars(ext, opts)));
+    const paths = buildPaths(ext, opts, opts.wikiFilename);
+    const ctx = makeCtx(ext, opts, doc, paths);
     const r = renderAnswerBlock(ext.root, doc, opts, ctx, false);
-    const filename = buildFilename(opts.wikiFilename, ext, opts);
+    const filename = paths.filename;
 
     const head = [];
     if (opts.frontMatter) {
@@ -861,6 +1125,9 @@
       pageId: ext.pageId,
       url: ext.url,
       filename: filename,
+      dir: paths.dir,
+      repoDir: paths.repoDir,
+      segment: paths.segment,
       assets: ctx.assets,
       markdown: markdown,
       stats: r.stats
@@ -886,8 +1153,8 @@
 
     const single = items.length === 1;
     const template = single ? opts.qaFilename : opts.multiQaFilename;
-    const fileNameBase = renderTemplate(template, filenameVars(ext, opts));
-    const ctx = makeCtx(ext, opts, doc, fileNameBase);
+    const paths = buildPaths(ext, opts, template);
+    const ctx = makeCtx(ext, opts, doc, paths);
 
     // 先用第一个回答里出现的源文件卡片建立索引（引用标记 -> GitHub 链接）
     const idx = {};
@@ -898,7 +1165,7 @@
 
     const level = single ? '#' : '##';
     const blocks = [];
-    const totalStats = { codeBlocks: 0, tables: 0, links: 0, diagrams: 0 };
+    const totalStats = { codeBlocks: 0, tables: 0, links: 0, diagrams: 0, translations: 0 };
     items.forEach(function (it, i) {
       const r = renderAnswerBlock(it.answerEl, doc, opts, ctx, opts.demoteAnswerHeadings);
       Object.keys(totalStats).forEach(function (k) {
@@ -948,7 +1215,10 @@
       url: ext.url,
       count: items.length,
       questions: items.map(function (it) { return it.question; }),
-      filename: buildFilename(template, ext, opts),
+      filename: paths.filename,
+      dir: paths.dir,
+      repoDir: paths.repoDir,
+      segment: paths.segment,
       assets: ctx.assets,
       markdown: markdown,
       stats: totalStats
@@ -1055,9 +1325,16 @@
     buildSearchPage: buildSearchPage,
     buildNoteFragment: buildNoteFragment,
     buildNotesMarkdown: buildNotesMarkdown,
-    buildFilename: buildFilename,
+    buildPaths: buildPaths,
+    countTranslations: countTranslations,
+    countTranslatableBlocks: countTranslatableBlocks,
+    translationCoverage: translationCoverage,
+    translationStats: translationStats,
+    translatableBlocks: translatableBlocks,
+    isTranslatedBlock: isTranslatedBlock,
     frontMatter: frontMatter,
     sanitizeSegment: sanitizeSegment,
+    mdPath: mdPath,
     renderTemplate: renderTemplate,
     filenameVars: filenameVars,
     nowLocalIso: nowLocalIso,

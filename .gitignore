@@ -14,3 +14,6 @@ desktop.ini
 # 本地调试残留
 bundle-*.js
 *.assets/
+
+# 工作区内部状态（对话记忆、任务记录等）
+.workbuddy/

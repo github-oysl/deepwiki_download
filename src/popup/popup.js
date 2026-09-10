@@ -274,7 +274,8 @@
     $('btn-download').addEventListener('click', async function () {
       const kind = status && status.page ? status.page.type : 'wiki';
       const r = await sendToTab({ type: 'DW_EXPORT', kind: kind });
-      toast(r.ok ? '已开始下载：' + String(r.filename || '').split('/').pop() : '失败：' + (r.error || ''), r.ok ? 'ok' : 'err');
+      const tr = r && r.blocks ? ' · 译文 ' + r.translatedBlocks + '/' + r.blocks + ' 处' : '';
+      toast(r.ok ? '已开始下载：' + String(r.filename || '').split('/').pop() + tr : '失败：' + (r.error || ''), r.ok ? 'ok' : 'err');
     });
 
     $('btn-copy').addEventListener('click', async function () {
@@ -291,7 +292,17 @@
     });
 
     $('btn-batch').addEventListener('click', async function () {
-      if (!confirm('将依次抓取左侧目录中的全部子页面并导出为 Markdown。\n\n注意：批量导出使用隐藏 iframe 抓取，不会包含翻译插件的译文。\n过程中页面右下角会显示进度。')) {
+      const mode = options.batchTranslation || 'original';
+      const modeText = mode === 'translated'
+        ? '译文处理：逐页等待译文（慢）——这一趟会逐页滚动等翻译补齐再抓取。\n\n'
+        : (mode === 'ask'
+          ? '译文处理：每次导出前询问（本次已按你的选择执行）。\n\n'
+          : '译文处理：只导出原文（快）——不滚动页面，也不等翻译，' +
+            '正文与架构图都会完整导出，适合之后交给大模型翻译。\n\n');
+      if (!confirm('将在当前标签页里自动翻页导出左侧目录的全部子页面：\n' +
+        '逐页打开 → 等正文与架构图渲染完整 → 提取，每页一个独立文件夹（index.md + assets/），' +
+        '并在仓库目录下生成 00-目录.md。完成后自动回到起始页面。\n\n' + modeText +
+        '整个流程页面可见、可随时在页面右下角停止；重复导出会直接覆盖同名文件。\n\n是否继续？')) {
         return;
       }
       $('batch-hint').hidden = false;

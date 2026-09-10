@@ -47,6 +47,10 @@ async function ensureOffscreen() {
 
 /* ---------------- 下载 ---------------- */
 
+/* 同名文件用 overwrite：重复导出同一页面时直接覆盖旧文件，
+   Chrome 不会再生成「xxx (1).md」这种副本。 */
+const CONFLICT_ACTION = 'overwrite';
+
 function dataUrl(content, mime) {
   return (
     'data:' + (mime || 'text/markdown;charset=utf-8') + ',' +
@@ -75,7 +79,7 @@ async function downloadOne(file, saveAs) {
             url: made.url,
             filename: filename,
             saveAs: !!saveAs,
-            conflictAction: 'uniquify'
+            conflictAction: CONFLICT_ACTION
           });
           return { ok: true, id: id };
         } catch (e) {
@@ -97,7 +101,7 @@ async function downloadOne(file, saveAs) {
       url: dataUrl(content, mime),
       filename: filename,
       saveAs: !!saveAs,
-      conflictAction: 'uniquify'
+      conflictAction: CONFLICT_ACTION
     });
     return { ok: true, id: id };
   }
